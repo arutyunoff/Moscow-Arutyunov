@@ -1,0 +1,245 @@
+Окей, давай прям пошаговый псевдокод под твою задачу:
+«Оптимизация параметров цикла на изолированном перекрёстке + ML над этим».
+
+Буду писать в стиле Python-псевдокода с комментариями.
+
+⸻
+
+1. Определяем, что мы оптимизируем
+
+Пусть у нас:
+	•	подъезды: A, B, C, D
+	•	фазы: phase_1, phase_2, ..., phase_N (например: NS-прямо+право, EW-прямо+право и т.п.)
+	•	параметры цикла:
+	•	C – длительность цикла
+	•	g[i] – зелёное время для фазы i
+	•	(фиксированные жёлтые/красные – можно взять как константы)
+
+Вектор параметров:
+
+params = {
+    "C": C,
+    "g": [g_1, g_2, ..., g_N],
+}
+
+
+⸻
+
+2. Функция оценки цикла через симулятор
+
+function evaluate_cycle(demand, params):
+    """
+    demand: словарь/вектор интенсивностей по подъездам, например:
+        demand = {
+            "A": q_A,  # авто/час
+            "B": q_B,
+            "C": q_C,
+            "D": q_D,
+        }
+
+    params: {"C": C, "g": [g_1,...,g_N]}
+    return: scalar_cost (чем меньше, тем лучше)
+    """
+
+    # 1. Сгенерировать/обновить файл конфигурации светофора в симуляторе
+    #    (например, переписать tls-план в SUMO на основе C и g)
+    tls_program = build_tls_program_from_params(params)
+    write_tls_to_simulator_config(tls_program)
+
+    # 2. Запустить симуляцию на заданный горизонт T_sim (например 3600 с)
+    sim = start_simulator(demand, tls_program)
+    while sim.time < T_sim:
+        sim.step()
+
+    # 3. Собрать метрики за весь период
+    avg_delay    = sim.get_average_delay()
+    avg_stops    = sim.get_average_number_of_stops()
+    avg_queue    = sim.get_average_queue_length()
+
+    # 4. Посчитать целевую функцию
+    #    Например, взвешенная сумма: задержка + очереди
+    alpha = 1.0
+    beta  = 0.5
+    gamma = 0.2
+    cost = alpha * avg_delay + beta * avg_queue + gamma * avg_stops
+
+    return cost
+
+
+⸻
+
+3. Поиск оптимальных параметров цикла для одного сценария
+
+Простой вариант – грубый перебор по сетке (для курсовой/диплома нормально):
+
+function optimize_cycle_for_scenario(demand):
+
+    best_cost   = +infinity
+    best_params = None
+
+    # Диапазоны поиска:
+    C_values    = range(60, 121, 10)        # 60,70,...,120
+    split_grid  = generate_splits_grid(N)   # варианты распределения зелёного по фазам
+
+    for C in C_values:
+        for split in split_grid:
+            # split = [s_1,...,s_N] в долях (сумма = 1)
+            g = []
+            for i in range(N):
+                g_i = C * split[i]
+                g.append(g_i)
+
+            # проверка минимальных зелёных
+            if not is_valid_green_times(g):
+                continue
+
+            params = {"C": C, "g": g}
+
+            cost = evaluate_cycle(demand, params)
+
+            if cost < best_cost:
+                best_cost   = cost
+                best_params = params
+
+    return best_params, best_cost
+
+generate_splits_grid(N) – например, все комбинации [0.1,0.2,...] с шагом 0.05, сумма = 1.
+
+Если хочется круче – на этом месте можно заменить перебор на:
+	•	генетический алгоритм,
+	•	random search,
+	•	байесовскую оптимизацию,
+но структура псевдокода такая же: многократно вызываем evaluate_cycle().
+
+⸻
+
+4. Генерация датасета «потоки → оптимальные параметры цикла»
+
+function generate_dataset(num_scenarios):
+
+    dataset_inputs  = []  # X: спрос
+    dataset_outputs = []  # y: оптимальные параметры
+
+    for s in range(num_scenarios):
+
+        # 1. Сгенерировать сценарий потоков (demand)
+        demand = sample_random_demand()  
+        # напр. q_A,q_B,q_C,q_D из разумных диапазонов
+
+        # 2. Найти оптимальные параметры цикла под этот demand
+        best_params, best_cost = optimize_cycle_for_scenario(demand)
+
+        # 3. Записать в датасет
+        # вход: вектор интенсивностей (можно в одном порядке, напр. [q_A, q_B, q_C, q_D])
+        x = demand_to_vector(demand)  # [q_A, q_B, q_C, q_D]
+
+        # выход: можно напрямую параметры [C, g_1, ..., g_N]
+        y = params_to_vector(best_params)   # [C, g_1, g_2, ..., g_N]
+
+        dataset_inputs.append(x)
+        dataset_outputs.append(y)
+
+    return dataset_inputs, dataset_outputs
+
+
+⸻
+
+5. Обучение ML-модели по полученному датасету
+
+function train_cycle_regressor(X, Y):
+    """
+    X: список/матрица размером [num_samples, dim_demand]
+    Y: список/матрица размером [num_samples, dim_params]
+    """
+    model = init_regression_model()  
+    # например, MLP, XGBoost, RandomForestRegressor и т.п.
+
+    model.fit(X, Y)
+    return model
+
+Полный пайплайн:
+
+# 1. Генерируем датасет
+X, Y = generate_dataset(num_scenarios=500)
+
+# 2. Обучаем модель
+regressor = train_cycle_regressor(X, Y)
+
+# 3. Сохраняем модель
+save_model(regressor, "cycle_params_model.bin")
+
+
+⸻
+
+6. Использование обученной модели онлайн
+
+function online_control_loop():
+    # загрузить заранее обученную модель
+    regressor = load_model("cycle_params_model.bin")
+
+    while True:
+        # 1. Измерить текущие потоки на подъездах за последние T минут
+        demand_now = measure_current_demand()  # {"A":..., "B":..., ...}
+        x_now      = demand_to_vector(demand_now)
+
+        # 2. Предсказать параметры цикла
+        y_pred = regressor.predict(x_now)      # [C_pred, g1_pred, ..., gN_pred]
+        params_pred = vector_to_params(y_pred)
+
+        # 3. Дополнительные проверки/ограничения (минимальные зелёные, макс. цикл)
+        params_safe = project_params_to_feasible_region(params_pred)
+
+        # 4. Применить эти параметры к светофору в реальном времени
+        apply_params_to_signal_controller(params_safe)
+
+        # 5. Подождать некоторое время до следующего пересчёта (например, 5–15 мин)
+        sleep(update_interval)
+
+
+⸻
+
+7. Опционально: RL-версии оптимизации (если захочешь)
+
+Если захочешь именно RL на одном перекрёстке (где агент сам «решает», как длинно держать фазу и т.д.), структура будет такой:
+
+# ENV
+
+function env_reset():
+    reset_simulator_with_random_demand()
+    state = get_current_state()  # очереди, фаза, время фазы и т.п.
+    return state
+
+function env_step(action):
+    # action: напр. 0=держать текущую фазу, 1=переключить фазу
+
+    if action == SWITCH_PHASE and phase_min_green_already_satisfied():
+        switch_phase()
+
+    # крутим симуляцию несколько секунд (например, 5 сек)
+    for i in range(k_steps):
+        sim.step()
+
+    next_state = get_current_state()
+
+    # reward: минус задержка/очереди
+    reward = - compute_total_delay()
+
+    done = (sim.time >= T_sim)  # конец эпизода
+    return next_state, reward, done
+
+И потом:
+
+# RL TRAIN
+
+env = IntersectionEnv()
+agent = init_RL_agent(env)  # DQN, PPO и т.п.
+
+agent.train(num_episodes=K)
+save_agent(agent)
+
+
+⸻
+
+Если хочешь, в следующем шаге могу:
+	•	помочь конкретизировать demand_to_vector, params_to_vector и сами диапазоны,
+	•	или расписать, как можно ограничивать модель, чтобы она не давала слишком странные значения (например, через параметризацию сплитов через softmax).
